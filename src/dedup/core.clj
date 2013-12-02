@@ -9,9 +9,9 @@
 
 (deftype Reference [sha])
 
-(defonce true-hash (sha1 "boolean true"))
-(defonce false-hash (sha1 "boolean false"))
-(defonce nil-hash (sha1 "nil"))
+(def true-hash (sha1 "boolean true"))
+(def false-hash (sha1 "boolean false"))
+(def nil-hash (sha1 "nil"))
 
 (defprotocol Hashable
   (hash [this]))
@@ -21,6 +21,10 @@
   (hash [this] (sha1 (str "string " this)))
   Long
   (hash [this] (sha1 (str "long " this)))
+  Double
+  (hash [this] (sha1 (str "double " this)))
+
+  ;; I guess we don't need these two? Try to design better...
   clojure.lang.APersistentMap
   (hash [this]
     (let [sorted-keys (sort (keys this))]
@@ -43,6 +47,26 @@
   Reference
   (hash [this] (.sha this)))
 
+(defprotocol IDecomposeable
+  (decompose [this]))
+
+(extend-protocol IDecomposeable
+  clojure.lang.APersistentVector
+  (decompose [this]
+    (cons :vector this))
+  clojure.lang.APersistentMap
+  (decompose [this]
+    (let [sorted-keys (-> this keys sort vec)]
+      (list :map sorted-keys (mapv this sorted-keys)))))
+
+(defmulti compose first)
+(defmethod compose :vector
+  [_ & els]
+  (vec els))
+(defmethod compose :map
+  [_ ks vs]
+  (zipmap ks vs))
+
 (defmethod print-method Reference
   [ref pw]
   (.append pw "#dedup.core/Reference ")
@@ -50,14 +74,23 @@
 
 (defn store
   [ob]
-  (wk/postwalk (fn [x] (let [h (hash x)]
-                         (kv/put h x)
-                         (->Reference h)))
-               ob))
+  (if (satisfies? IDecomposeable ob)
+    (let [[type & contents] (decompose ob)
+          k (sha1 (s/join " " (cons (name type)
+                                    (map #(.sha (store %)) contents))))]
+      (kv/put k (cons type contents))
+      (->Reference k))
+    (let [k (hash ob)]
+      (kv/put k ob)
+      (->Reference k))))
 
 (defn materialize
   [ref]
-  (wk/prewalk (fn [ref] (kv/get (.sha ref))) ref))
+  (let [ob (kv/get (.sha ref))]
+    (if (sequential? ob)
+      (let [[type & contents] ob]
+        (compose (cons type (map materialize contents))))
+      ob)))
 
 (defn standard-types
   [ob]
